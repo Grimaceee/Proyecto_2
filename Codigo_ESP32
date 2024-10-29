@@ -1,0 +1,142 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <Wire.h>
+
+// Definición de pines
+#define LED1_PIN 13 // Pin para LED1
+#define LED2_PIN 12 // Pin para LED2
+#define LED3_PIN 14 // Pin para LED3
+#define SS_PIN 5    // Pin de selección de esclavo (SS)
+#define I2C_SLAVE_ADDR 0x08  // Dirección I2C del ESP32
+#define POTENTIOMETER_PIN 34  // Pin analógico del potenciómetro (GPIO34 en ESP32)
+#define ADC_MAX_VALUE 4095   // Rango máximo del ADC en el ESP32
+#define TARGET_MAX_VALUE 255 // Rango máximo que espera el STM32
+
+// Función para mapear el valor del potenciómetro de un rango a otro
+int mapValue(int value, int in_min, int in_max, int out_min, int out_max) {
+    return (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+// Prototipos de funciones
+void receiveSPIData(); // Prototipo de la función para recibir datos SPI
+void processCommand(const char *command); // Prototipo de la función para procesar el comando recibido
+void receiveI2CCommand(int numBytes); // Prototipo para recibir datos vía I2C
+void sendI2CData(); // Prototipo para enviar datos cuando se soliciten por I2C
+
+// Buffer para almacenar el comando recibido
+char receivedCommand[32]; // Cambia el tamaño según sea necesario
+int potentiometerValue = 0; // Variable para almacenar el valor del potenciómetro
+
+void setup() {
+    Serial.begin(115200); // Inicializa la comunicación serial
+    pinMode(LED1_PIN, OUTPUT); // Configura el pin del LED1 como salida
+    pinMode(LED2_PIN, OUTPUT); // Configura el pin del LED2 como salida
+    pinMode(LED3_PIN, OUTPUT); // Configura el pin del LED3 como salida
+    pinMode(SS_PIN, INPUT_PULLUP); // Configura el pin SS como entrada con pull-up
+    pinMode(POTENTIOMETER_PIN, INPUT); // Configura el pin del potenciómetro como entrada analógica
+
+    // Inicializa la comunicación SPI
+    SPI.begin(); // Inicia el SPI
+     // Inicializa la comunicación I2C en el ESP32 como esclavo
+    Wire.begin(I2C_SLAVE_ADDR);  // Dirección I2C del ESP32
+    Wire.onReceive(receiveI2CCommand);  // Función que se llama al recibir datos por I2C
+    Wire.onRequest(sendI2CData);  // Función que se llama cuando se solicita datos por I2C
+}
+
+void loop() {
+  // Leer el valor del potenciómetro
+    potentiometerValue = analogRead(POTENTIOMETER_PIN);  // Lee el valor analógico del potenciómetro (0-4095)
+
+    if (digitalRead(SS_PIN) == LOW) { // Si el pin SS está bajo, significa que hay datos
+        receiveSPIData(); // Llama a la función para recibir datos SPI
+    }
+}
+
+// Función para recibir datos SPI
+void receiveSPIData() {
+    digitalWrite(LED1_PIN, HIGH); // Enciende el LED1 al recibir datos
+    int index = 0;
+    
+    // Leer varios bytes del SPI
+    while (index < sizeof(receivedCommand) - 1) {
+        receivedCommand[index] = SPI.transfer(0); // Lee un byte de SPI
+        if (receivedCommand[index] == '\n') break; // Si se encuentra un terminador, sale
+        index++;
+    }
+    
+    receivedCommand[index] = '\n'; // Asegura que la cadena esté terminada
+    
+    if (index > 0) { // Solo procesar si se recibió algo
+        processCommand(receivedCommand); // Procesa el comando recibido
+    } else {
+        Serial.println("No se recibió ningún comando válido.");
+    }
+
+    digitalWrite(LED1_PIN, LOW); // Apaga el LED1 al terminar
+}
+
+// Función para recibir comandos vía I2C
+void receiveI2CCommand(int numBytes) {
+    int index = 0;
+    
+    // Leer los bytes recibidos vía I2C
+    while (Wire.available() && index < sizeof(receivedCommand) - 1) {
+        receivedCommand[index] = Wire.read();  // Lee un byte desde I2C
+        if (receivedCommand[index] == '\0') break;  // Salir si encuentra un terminador de cadena
+        index++;
+    }
+    
+    receivedCommand[index] = '\0';  // Asegura que la cadena esté terminada
+    
+    if (index > 0) {  // Solo procesar si se recibió algo
+        processCommand(receivedCommand);  // Procesa el comando recibido
+    } else {
+        Serial.println("No se recibió ningún comando válido vía I2C.");
+    }
+}
+
+
+// Función para procesar el comando recibido
+void processCommand(const char *command) {
+    Serial.printf("Comando recibido: %s\n", command);
+    int ledNumber;
+    int duration;
+
+    // Parsear el comando
+    if (sscanf(command, "%d,%d", &ledNumber, &duration) == 2) {
+        int ledPin = -1;
+        switch (ledNumber) {
+            case 1:
+                ledPin = LED1_PIN;
+                break;
+            case 2:
+                ledPin = LED2_PIN;
+                break;
+            case 3:
+                ledPin = LED3_PIN;
+                break;
+            default:
+                Serial.println("LED no válido");
+                return;
+        }
+
+        // Encender el LED y esperar el tiempo especificado
+        digitalWrite(ledPin, HIGH); // Enciende el LED
+        delay(duration); // Espera el tiempo especificado
+        digitalWrite(ledPin, LOW); // Apaga el LED
+        Serial.printf("LED %d encendido por %d ms\n", ledNumber, duration);
+    } else {
+        Serial.println("Comando no válido");
+    }
+}
+
+// Función para enviar el valor del potenciómetro mapeado cuando se solicite por I2C
+void sendI2CData() {
+    int mappedValue = mapValue(potentiometerValue, 0, ADC_MAX_VALUE, 0, TARGET_MAX_VALUE);
+
+    // Enviar el valor mapeado directamente como un byte en lugar de una cadena
+    uint8_t potValueByte = (uint8_t)mappedValue;
+    Wire.write(&potValueByte, sizeof(potValueByte));
+
+    Serial.printf("Valor del potenciómetro enviado (mapeado): %d\n", mappedValue);
+}
